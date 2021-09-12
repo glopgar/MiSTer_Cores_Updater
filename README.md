@@ -9,9 +9,11 @@ This is a preview release, enabled for downloading cores from these repositories
 Instructions:
 
 Upload the script and config files to the MiSTer `/Scripts` folder (by default `/media/fat/Scripts`:
-* update_cores.py
+* update_cores.sh
 * update_cores.ini
 
 You can change the cores destination paths from the `update_cores.ini`.
 
-Execute the script: `update_cores.py`
+Execute the script: `update_cores.sh`
+
+The script creates a folder named `update_cores_files` in the Scripts folder, for storing temporary files, logs and caches. You can safely delete this folder at any time, as it will be created again if not present.
