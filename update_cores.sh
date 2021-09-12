@@ -704,7 +704,7 @@ class JotegoCoresUrlsProvider:
     JTBIN_URL = "https://github.com/jotego/jtbin"
     ALTERNATIVES_URL = "https://github.com/jotego/jtbin/tree/master/mister/MRA-Alternatives_MiSTer"
     BETA_CORES = [
-        's16', 's16a2', 's16b', 's16b1', 'mx5k'
+        's16', 's16a2', 's16b', 's16b1', 'mx5k', 'flane'
     ]
 
     def __init__(self, config, paths_helper, system_helper):
