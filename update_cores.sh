@@ -21,10 +21,8 @@ import shutil
 import email.utils as eut
 
 
-# todo cache only used fields for repos info
-# todo delete the files work_path when ensuring exists
-# todo delete additional present files optionally
-# todo force update when config file date is newer
+# todo log MRA-alternatives in summary
+# todo check handling of older MRA-Alternatives versions
 
 class UpdateCoreError(RuntimeError):
     pass
@@ -128,9 +126,13 @@ class GithubReposInfoHelper:
                 break
             for repo in repos:
                 svn_url = repo['svn_url']
-                all_repos[svn_url] = repo
+                all_repos[svn_url] = self._filter_fields(repo, ['svn_url', 'full_name', 'name', 'updated_at',
+                                                                'default_branch'])
             p = p + 1
         return all_repos
+
+    def _filter_fields(self, repo, fields):
+        return {k: v for k, v in filter(lambda f: f[0] in fields, repo.items())}
 
 
 class SystemHelper:
@@ -306,6 +308,7 @@ class SystemHelper:
     def get_local_file_mtime(path):
         return datetime.datetime.fromtimestamp(pathlib.Path(path).stat().st_mtime)
 
+
 class EntitiesMetadataHelper:
     """Methods for storing data associated to files"""
 
@@ -363,6 +366,7 @@ class EntitiesMetadataHelper:
 
     def _load_metadata(self):
         self.config_parser = configparser.ConfigParser()
+        self.config_parser['LAST_EXECUTION'] = {}  # this makes this item go first in the file
         try:
             self.config_parser.read_file(codecs.open(self.metadata_filepath, "r", "utf8"))
         except FileNotFoundError:
@@ -562,42 +566,43 @@ class UpdateSummaryHelper:
         self.end_time = end_time
 
     def log_summary(self):
-        logging.info('')
-        logging.info('==================================')
-        logging.info('Update summary')
-        logging.info('Start time: ' + str(self.start_time))
-        logging.info('End time  : ' + str(self.end_time))
-        logging.info('==================================')
-        logging.info('Updated files:')
+        logger = logging.getLogger('summary')
+        logger.info('')
+        logger.info('==================================')
+        logger.info('Update summary')
+        logger.info('Start time: ' + str(self.start_time))
+        logger.info('End time  : ' + str(self.end_time))
+        logger.info('==================================')
+        logger.info('Updated files:')
         if self.updated_files:
             for file in self.updated_files:
-                logging.info(' ' + file)
+                logger.info(' ' + file)
                 if file in self.deleted_versions:
                     for deleted_file in self.deleted_versions[file]:
                         if os.path.basename(file) == os.path.basename(deleted_file):
-                            logging.info('    |___ deleted version: ' + os.path.basename(deleted_file))
+                            logger.info('    |___ deleted version: ' + os.path.basename(deleted_file))
                         else:
-                            logging.info('    |___ deleted version from other path: ' + deleted_file)
+                            logger.info('    |___ deleted version from other path: ' + deleted_file)
                     del self.deleted_versions[file]
         else:
-            logging.info(' None')
-        logging.info('')
-        logging.info('Files that could not be updated:')
+            logger.info(' None')
+        logger.info('')
+        logger.info('Files that could not be updated:')
         if self.files_not_deleted_by_error:
             for file in self.files_not_deleted_by_error:
-                logging.info(' ' + file)
+                logger.info(' ' + file)
         else:
-            logging.info(' None')
+            logger.info(' None')
 
-        logging.info('')
-        logging.info('Other files deleted:')
+        logger.info('')
+        logger.info('Other files deleted:')
         if self.deleted_files:
             for deleted_file in self.deleted_files:
-                logging.info(' ' + deleted_file)
+                logger.info(' ' + deleted_file)
         else:
-            logging.info(' None')
+            logger.info(' None')
 
-        logging.info('')
+        logger.info('')
 
 
 class LocalFilesHelper:
@@ -608,7 +613,7 @@ class LocalFilesHelper:
         self.system_helper = system_helper
         self.summary_helper = summary_helper
 
-    def get_category_paths_files_list(self, skipped_files = None):
+    def get_category_paths_files_list(self, skipped_files=None):
         """Scans each category path and returns a list of all files present"""
         if skipped_files is None:
             skipped_files = []
@@ -623,7 +628,6 @@ class LocalFilesHelper:
                     if file not in files and file not in skipped_files:
                         files.append(file)
         return files
-
 
     def delete_files(self, files_not_to_be_deleted):
         all_files = self.get_category_paths_files_list(skipped_files=files_not_to_be_deleted)
@@ -700,7 +704,6 @@ class MainCoresUrlsProvider:
 
 
 class JotegoCoresUrlsProvider:
-
     JTBIN_URL = "https://github.com/jotego/jtbin"
     ALTERNATIVES_URL = "https://github.com/jotego/jtbin/tree/master/mister/MRA-Alternatives_MiSTer"
     BETA_CORES = [
@@ -751,7 +754,6 @@ class JotegoCoresUrlsProvider:
 
 
 class RampaCoresUrlsProvider:
-
     ZX48_URL = "https://github.com/Kyp069/zx48-MiSTer"
 
     def __init__(self, config, paths_helper, system_helper):
@@ -765,6 +767,7 @@ class RampaCoresUrlsProvider:
                 self.ZX48_URL
             ],
         }
+
 
 class CoresUpdater:
 
@@ -783,9 +786,8 @@ class CoresUpdater:
 
     def update(self, repo_urls_providers):
 
-        self._full_sync_mode = self.config.getboolean('GENERAL', 'FORCE_UPDATE')
+        self._full_sync_mode = self._should_emable_full_sync_mode()
         if self._full_sync_mode:
-            logging.info('')
             logging.info('   >>> FULL SYNC <<<')
 
         for repo_urls_provider in repo_urls_providers:
@@ -834,8 +836,27 @@ class CoresUpdater:
                     except Exception as e:
                         logging.error('  @@@@ Error while scanning: ' + repo_url + ' @@@@', exc_info=e)
 
-        logging.debug('Saving files metadata.ini')
-        self.metadata_helper.save()
+        self.metadata_helper.set_value('LAST_EXECUTION', 'TIMESTAMP',
+                                       datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    def _should_emable_full_sync_mode(self):
+
+        if self.config.getboolean('GENERAL', 'FORCE_UPDATE'):
+            logging.info('  Full sync enabled by configuration flag.')
+            return True
+
+        last_execution_timestamp = self.metadata_helper.get_value('LAST_EXECUTION', 'TIMESTAMP')
+        if last_execution_timestamp is None:
+            logging.info('  Last execution timestamp not present in metadata. Force full sync.')
+            return True
+
+        last_execution_timestamp = datetime.datetime.strptime(last_execution_timestamp, "%Y-%m-%d %H:%M:%S")
+        config_file_timestamp = datetime.datetime.fromtimestamp(int(self.config['GENERAL']['CONFIG_FILE_TIMESTAMP']))
+        if config_file_timestamp >= last_execution_timestamp:
+            logging.info('  Config file modified since last execution. Force full sync.')
+            return True
+
+        return False
 
     def _update_repo_files(self, repo_url, core_category):
 
@@ -859,6 +880,10 @@ class CoresUpdater:
         remote_files = self._fetch_core_files_list(core_category, repo_url, core_repo_info)
         for file in remote_files:
             remote_file = self.paths_helper.get_max_version(remote_files[file])
+            if remote_file is None:
+                logging.debug('   ' + file)
+                logging.debug('   No version found that complies with MAX_VERSION')
+                continue
             try:
                 if os.path.basename(file) == 'MRA-Alternatives.zip':
                     self._update_remote_alternative_mras(remote_file, core_repo_info, core_category)
@@ -894,6 +919,7 @@ class CoresUpdater:
         return remote_files
 
     def _update_remote_file(self, remote_file, core_repo_info, core_category):
+
         logging.info('')
         logging.info('   Remote file: ' + remote_file)
 
@@ -943,7 +969,6 @@ class CoresUpdater:
                 self.summary_helper.add_deleted_file_version(local_filepath, old_version_metadata['local_path'])
             self.metadata_helper.delete_values(file_url)
 
-
     def _update_remote_alternative_mras(self, remote_file, core_repo_info, core_category):
 
         logging.info('')
@@ -976,7 +1001,7 @@ class CoresUpdater:
                         raise UpdateCoreError
                     mra_relative_path = temp_mra_path[len(unzip_temp_folder):]
                     local_filepath = self._get_local_alternative_mra_path(core_category, mra_relative_path,
-                                                                                      temp_mra_path)
+                                                                          temp_mra_path)
                     self.paths_helper.ensure_path_exists(os.path.dirname(local_filepath))
                     os.rename(temp_mra_path, local_filepath)
                     logging.info('   Copied file: ' + local_filepath)
@@ -993,18 +1018,19 @@ class CoresUpdater:
                 'checked_at': http_headers['date'].strftime("%Y-%m-%d %H:%M:%S"),
                 'mra_files': '\n'.join(mra_files_meta),
             })
-            logging.info('   File metadata updated')
+            self.summary_helper.add_updated_file(remote_file)
 
             if mra_files_before_update is not None:
                 for mra_file_before_update in mra_files_before_update:
-                    mra_file_before_update_relative_path, mra_file_before_update_path = mra_file_before_update.split('||')
+                    mra_file_before_update_relative_path, mra_file_before_update_path = mra_file_before_update.split(
+                        '||')
                     if mra_file_before_update_relative_path not in mra_relative_paths:
                         if pathlib.Path(mra_file_before_update_path).exists():
                             os.unlink(mra_file_before_update_path)
                             self.summary_helper.add_deleted_file_version(mra_file_before_update_path)
                         logging.info('   Deleted file missing from new ZIP version:' + mra_file_before_update_path)
 
-        #self._handle_other_alternatives_zip_versions(core_category, remote_file, mra_files)
+        # self._handle_other_alternatives_zip_versions(core_category, remote_file, mra_files)
 
     # todo check
     def _handle_other_alternatives_zip_versions(self, core_category, url, current_mra_files):
@@ -1108,45 +1134,60 @@ class TestCoresUpdater(CoresUpdater):
         })
 
 
-def setup_logging(level):
+def setup_logging(level, log_file_path):
     logger = logging.getLogger("")
     logger.setLevel(level)
     formatter = logging.Formatter('%(asctime)s [%(levelname)s]: %(message)s')
-    # file_handler = logging.handlers.RotatingFileHandler("pulse.log", maxBytes=(1024*1024), backupCount=0)
-    # logging.getLogger().addHandler(file_handler)
+    file_handler = logging.handlers.RotatingFileHandler(log_file_path, maxBytes=(1024*1024), backupCount=0)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
-    logging.getLogger().addHandler(console_handler)
+    logger.addHandler(console_handler)
 
+def setup_summary_logging(log_file_path):
+    logger = logging.getLogger("summary")
+    logger.setLevel('INFO')
+    formatter = logging.Formatter('%(message)s')
+    file_handler = logging.handlers.RotatingFileHandler(log_file_path, maxBytes=(1024*1024), backupCount=0)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
 def load_config(config_filepath):
     config_parser = configparser.ConfigParser()
     config_parser._interpolation = configparser.ExtendedInterpolation()
     config_parser.read_file(codecs.open(config_filepath, "r", "utf8"))
+    config_file_timestamp = datetime.datetime.fromtimestamp(pathlib.Path(config_filepath).stat().st_mtime)
+    config_file_timestamp = os.path.getmtime(config_filepath)
+    config_parser['GENERAL']['CONFIG_FILE_TIMESTAMP'] = str(int(config_file_timestamp))
     return config_parser
 
 
 def run():
-    try:
 
-        config_file = 'update_cores.ini'
-        config = load_config(config_file)
-        setup_logging(config['GENERAL']['LOG_LEVEL'])
+    config_file = 'update_cores.ini'
+    config = load_config(config_file)
+
+    # initialize dependencies
+    paths_helper = PathsHelper(config)
+    system_helper = SystemHelper(config, paths_helper)
+    cache_helper = CacheHelper(config, paths_helper)
+    github_repos_info_helper = GithubReposInfoHelper(config, paths_helper, system_helper, cache_helper)
+    update_summary_helper = UpdateSummaryHelper()
+    update_summary_helper.set_starttime(datetime.datetime.now())
+    local_files_helper = LocalFilesHelper(config, paths_helper, system_helper, update_summary_helper)
+
+    paths_helper.ensure_work_path_exists('logs')
+    log_file_path = paths_helper.get_work_filepath('update_cores.log', 'logs')
+    setup_logging(config['GENERAL']['LOG_LEVEL'], log_file_path)
+
+    try:
 
         logging.info('*********************************************')
         logging.info("**** STARTING MISTER CORES UPDATE SCRIPT ****")
         logging.info('*********************************************')
         logging.info('')
-
-        # initialize dependencies
-        paths_helper = PathsHelper(config)
-        system_helper = SystemHelper(config, paths_helper)
-        cache_helper = CacheHelper(config, paths_helper)
-        github_repos_info_helper = GithubReposInfoHelper(config, paths_helper, system_helper, cache_helper)
-        update_summary_helper = UpdateSummaryHelper()
-        update_summary_helper.set_starttime(datetime.datetime.now())
-        local_files_helper = LocalFilesHelper(config, paths_helper, system_helper, update_summary_helper)
 
         # setup
         paths_helper.ensure_work_path_exists()
@@ -1154,7 +1195,7 @@ def run():
 
         # initialize core repos URLs providers
         repo_urls_providers = []
-        #repo_urls_providers.append(MainCoresUrlsProvider(config, system_helper))
+        repo_urls_providers.append(MainCoresUrlsProvider(config, system_helper))
         repo_urls_providers.append(JotegoCoresUrlsProvider(config, paths_helper, system_helper))
         repo_urls_providers.append(RampaCoresUrlsProvider(config, paths_helper, system_helper))
 
@@ -1163,7 +1204,7 @@ def run():
         cores_updater = CoresUpdater(config, paths_helper, system_helper, github_repos_info_helper,
                                      update_summary_helper, local_files_helper, metadata_helper)
         cores_updater.update(repo_urls_providers)
-        #local_files_helper.delete_files(cores_updater.get_local_files_list())
+        # local_files_helper.delete_files(cores_updater.get_local_files_list())
 
         logging.info('')
         logging.info('***** MISTER CORES UPDATE FINISHED *****')
@@ -1175,8 +1216,13 @@ def run():
     except KeyboardInterrupt:
         logging.info("Script stopped. Exiting")
 
+    logging.info('Saving files metadata.ini')
+    metadata_helper.save()
+
     try:
         update_summary_helper.set_endtime(datetime.datetime.now())
+        log_file_path = paths_helper.get_work_filepath('summary.log', 'logs')
+        setup_summary_logging(log_file_path)
         update_summary_helper.log_summary()
     except NameError:
         pass
