@@ -1,6 +1,8 @@
 # MiSTer_Cores_Updater
 Script for updating MiSTer cores from any repository
 
+### _______ alpha version _________
+
 Script for downloading cores for the MisTer FPGA.
 This is a preview release, enabled for downloading cores from these repositories:
 * Jotego arcade cores. Beta cores are downloaded to a separate folder, including alternative MRAs.
